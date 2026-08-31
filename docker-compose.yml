@@ -6,13 +6,13 @@ services:
     container_name: icbc-road-test-catcher
     environment:
       - TZ=America/Vancouver
-      - USER_LAST_NAME=YourLastName
-      - USER_LICENSE_NUMBER=1234567
-      - USER_KEYWORD=your_keyword_here
-      - USER_GMAIL=your.email@gmail.com
-      - USER_GMAIL_APP_PASSWORD=your_16_character_app_password
-      - DESIRED_DATE_START=2025-06-24
-      - DESIRED_DATE_END=2025-06-30
-      - LOCATION_IDS=9,93  # 9 = Vancouver (Point Grey), 93 = Richmond
+      - USER_LAST_NAME=YourLastName  # TODO: change to yours
+      - USER_LICENSE_NUMBER=1234567  # TODO: change to yours
+      - USER_KEYWORD=your_keyword_here  # TODO: change to yours
+      - USER_GMAIL=your.email@gmail.com   # TODO: change to yours
+      - USER_GMAIL_APP_PASSWORD=your_16_character_app_password  # TODO: change to yours
+      - DESIRED_DATE_START=2025-06-24   # TODO: change to yours
+      - DESIRED_DATE_END=2025-06-30     # TODO: change to yours
+      - LOCATION_IDS=  # TODO: comma-separated. e.g. LOCATION_IDS=9,93 (See README for how to find IDs. For example, 9=Vancouver, 93=Richmond)
     volumes:
       - ./logs:/app/logs  # verbose logs written here, timestamped per run
