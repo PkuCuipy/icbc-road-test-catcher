@@ -112,8 +112,11 @@ The desired date range is now configured via environment variables:
 - `DESIRED_DATE_END`: End date in YYYY-MM-DD format (default: 2025-06-30)
 
 ### Location IDs
-```python
-"location_ids": [214]  # 214 = Duncan, add more IDs for other locations
+
+Configured via the `LOCATION_IDS` environment variable, a comma-separated list of ICBC location IDs. **Required** — the script will refuse to start if it's not set:
+```bash
+export LOCATION_IDS="9"          # Vancouver driver licensing (Point Grey)
+export LOCATION_IDS="9,214"      # multiple locations
 ```
 
 ### Other Settings
@@ -142,6 +145,8 @@ docker-compose up -d
 ```bash
 docker-compose logs -f icbc-catcher
 ```
+
+Verbose logs (including request/response details and timing) are also written to a timestamped file under `./logs/` on the host (e.g. `logs/icbc_catcher_20260830_221530.log`), mounted from `/app/logs` in the container. A new log file is created each time the container starts.
 
 3. Stop the container:
 ```bash
@@ -179,8 +184,8 @@ Booking completed successfully! Script terminating.
 
 Common ICBC locations and their IDs:
 - Duncan: 214
+- Vancouver driver licensing (Point Grey): 9
 - Victoria: (add ID if known)
-- Vancouver: (add ID if known)
 
 To find other location IDs, inspect network traffic in your browser when selecting different locations on the ICBC website.
 

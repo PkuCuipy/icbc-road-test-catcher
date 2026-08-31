@@ -6,6 +6,25 @@ import time
 import pytz
 import re
 import os
+import sys
+import logging
+
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+_log_start = datetime.now(pytz.timezone("America/Vancouver")).strftime("%Y%m%d_%H%M%S")
+LOG_FILE = os.path.join(LOG_DIR, f"icbc_catcher_{_log_start}.log")
+
+logger = logging.getLogger("icbc_catcher")
+logger.setLevel(logging.DEBUG)
+_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+_stdout_handler = logging.StreamHandler(sys.stdout)
+_stdout_handler.setFormatter(_formatter)
+logger.addHandler(_stdout_handler)
+
+_file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+_file_handler.setFormatter(_formatter)
+logger.addHandler(_file_handler)
 
 CONFIG = {
     "login_url": "https://onlinebusiness.icbc.com/deas-api/v1/webLogin/webLogin",
@@ -30,8 +49,8 @@ CONFIG = {
         "licenseNumber": os.getenv("USER_LICENSE_NUMBER")
     },
 
-    # Duncan
-    "location_ids": [214],
+    # Comma-separated ICBC location IDs, e.g. "9,93". Required, no default.
+    "location_ids": [int(x.strip()) for x in os.getenv("LOCATION_IDS", "").split(",") if x.strip()],
 
     "gmail": {
         "email": os.getenv("USER_GMAIL"),
@@ -58,31 +77,43 @@ def validate_config():
     """Validate that all required environment variables are set"""
     required_vars = [
         "USER_LAST_NAME",
-        "USER_LICENSE_NUMBER", 
+        "USER_LICENSE_NUMBER",
         "USER_KEYWORD",
         "USER_GMAIL",
-        "USER_GMAIL_APP_PASSWORD"
+        "USER_GMAIL_APP_PASSWORD",
+        "LOCATION_IDS"
     ]
-    
+
     optional_vars = ["DESIRED_DATE_START", "DESIRED_DATE_END"]
-    
+
     missing_vars = []
     for var in required_vars:
         if not os.getenv(var):
             missing_vars.append(var)
-    
+
     if missing_vars:
-        print(f"Error: Missing required environment variables: {', '.join(missing_vars)}")
-        print("Please set these variables in your .env file or environment")
+        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        logger.error("Please set these variables in your .env file or environment")
         return False
-    
+
+    if not CONFIG["location_ids"]:
+        logger.error(f"LOCATION_IDS is set but could not be parsed as a comma-separated list of integers: "
+                     f"{os.getenv('LOCATION_IDS')!r}")
+        return False
+
+    logger.debug(f"Config validated. desired_date_range={CONFIG['desired_date_range']}, "
+                 f"location_ids={CONFIG['location_ids']}, check_interval={CONFIG['check_interval']}s")
     return True
 
 
 def refresh_token():
     global current_token, last_token_refresh, drvr_id
+    logger.info("Attempting to refresh auth token...")
+    t0 = time.monotonic()
     try:
         with httpx.Client() as client:
+            logger.debug(f"PUT {CONFIG['login_url']} payload={{'drvrLastName': '{CONFIG['credentials']['drvrLastName']}', "
+                         f"'licenceNumber': '***', 'keyword': '***'}}")
             response = client.put(
                 CONFIG["login_url"],
                 json=CONFIG["credentials"],
@@ -91,6 +122,8 @@ def refresh_token():
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 OPR/116.0.0.0"
                 }
             )
+            elapsed = time.monotonic() - t0
+            logger.debug(f"Login response: status={response.status_code} elapsed={elapsed:.2f}s")
             response.raise_for_status()
 
             auth_header = response.headers.get('Authorization')
@@ -101,16 +134,16 @@ def refresh_token():
                 try:
                     login_data = response.json()
                     drvr_id = login_data.get('drvrId')
-                    print(f"Token refreshed. drvrID: {drvr_id}")
-                except:
-                    print("Failed to get drvrID from response")
+                    logger.info(f"Token refreshed successfully. drvrID: {drvr_id}")
+                except Exception:
+                    logger.warning("Token refreshed but failed to parse drvrID from response body")
 
                 return True
 
-        print("Failed to get token from headers")
+        logger.error(f"Failed to get token from response headers. status={response.status_code} headers={dict(response.headers)}")
         return False
     except Exception as e:
-        print(f"Error refreshing token: {e}")
+        logger.error(f"Error refreshing token after {time.monotonic() - t0:.2f}s: {e}")
         return False
 
 
@@ -125,12 +158,15 @@ def get_earliest_appointment():
         earliest_appointment = None
         desired_start = datetime.strptime(CONFIG["desired_date_range"]["start"], "%Y-%m-%d").date()
         desired_end = datetime.strptime(CONFIG["desired_date_range"]["end"], "%Y-%m-%d").date()
+        logger.info(f"Checking for available appointments between {desired_start} and {desired_end}...")
 
         with httpx.Client() as client:
             for location_id in CONFIG["location_ids"]:
                 request_data = CONFIG["appointment_request_base"].copy()
                 request_data["aPosID"] = location_id
+                logger.debug(f"POST {CONFIG['appointments_url']} payload={request_data}")
 
+                t0 = time.monotonic()
                 response = client.post(
                     CONFIG["appointments_url"],
                     json=request_data,
@@ -140,25 +176,35 @@ def get_earliest_appointment():
                         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 OPR/116.0.0.0"
                     }
                 )
+                elapsed = time.monotonic() - t0
+                logger.debug(f"Appointments response: status={response.status_code} elapsed={elapsed:.2f}s location={location_id}")
                 response.raise_for_status()
 
                 appointments = response.json()
-                print(f"Found {len(appointments)} available dates for location {location_id}")
+                logger.info(f"Found {len(appointments)} available dates for location {location_id}")
+
+                all_dates = [a["appointmentDt"]["date"] for a in appointments if "appointmentDt" in a]
+                if all_dates:
+                    logger.debug(f"Location {location_id} raw available dates: {all_dates}")
 
                 for appointment in appointments:
                     if "appointmentDt" in appointment:
                         appointment_date = datetime.strptime(appointment["appointmentDt"]["date"], "%Y-%m-%d").date()
 
                         if desired_start <= appointment_date <= desired_end:
+                            logger.info(f"Match found within desired range: {appointment_date} at location {location_id}")
                             if (earliest_appointment is None or
                                     appointment_date < datetime.strptime(earliest_appointment["appointmentDt"]["date"],
                                                                          "%Y-%m-%d").date()):
                                 earliest_appointment = appointment
 
+        if earliest_appointment is None:
+            logger.debug("No appointment within desired date range across all checked locations")
+
         return earliest_appointment
 
     except Exception as e:
-        print(f"Error checking available dates: {e}")
+        logger.error(f"Error checking available dates: {e}", exc_info=True)
         current_token = None
         return None
 
@@ -189,7 +235,10 @@ def lock_appointment(appointment):
             "signature": appointment["signature"]
         }
 
+        logger.info(f"Attempting to lock appointment on {appointment['appointmentDt']['date']}...")
         with httpx.Client() as client:
+            logger.debug(f"PUT {CONFIG['lock_url']} (unlock/reset) payload={unlock_data}")
+            t0 = time.monotonic()
             response = client.put(
                 CONFIG["lock_url"],
                 json=unlock_data,
@@ -199,10 +248,14 @@ def lock_appointment(appointment):
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 OPR/116.0.0.0"
                 }
             )
+            logger.debug(f"Unlock response: status={response.status_code} elapsed={time.monotonic() - t0:.2f}s")
             response.raise_for_status()
 
+            logger.debug("Sleeping 10s between unlock and lock calls...")
             time.sleep(10)
 
+            logger.debug(f"PUT {CONFIG['lock_url']} (lock) payload={lock_data}")
+            t0 = time.monotonic()
             response = client.put(
                 CONFIG["lock_url"],
                 json=lock_data,
@@ -212,15 +265,16 @@ def lock_appointment(appointment):
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 OPR/116.0.0.0"
                 }
             )
+            logger.debug(f"Lock response: status={response.status_code} elapsed={time.monotonic() - t0:.2f}s")
             response.raise_for_status()
 
             resulting_timezone = response.json()
 
-            print(f"Date {appointment['appointmentDt']['date']} successfully locked")
+            logger.info(f"Date {appointment['appointmentDt']['date']} successfully locked. bookedTs={resulting_timezone.get('bookedTs')}")
             return resulting_timezone["bookedTs"]
 
     except Exception as e:
-        print(f"Error locking appointment: {e}")
+        logger.error(f"Error locking appointment: {e}", exc_info=True)
         return None
 
 
@@ -234,8 +288,11 @@ def send_otp_email(booked_ts):
             "method": "E"
         }
 
+        logger.info("Requesting OTP code to be sent via email...")
+        logger.debug(f"POST {CONFIG['send_otp_url']} payload={otp_data}")
         timeout = httpx.Timeout(15.0, read=None)
         with httpx.Client() as client:
+            t0 = time.monotonic()
             response = client.post(
                 CONFIG["send_otp_url"],
                 json=otp_data,
@@ -246,43 +303,46 @@ def send_otp_email(booked_ts):
                 },
                 timeout=timeout
             )
+            logger.debug(f"Send OTP response: status={response.status_code} elapsed={time.monotonic() - t0:.2f}s body={response.text[:500]}")
 
             response.raise_for_status()
 
             result = response.json()
             if result.get("code") == "success":
-                print("OTP code sent to email")
+                logger.info("OTP code sent to email")
                 return True
             else:
-                print("Failed to send OTP code")
+                logger.error(f"Failed to send OTP code. response={result}")
                 return False
 
     except Exception as e:
-        print(f"Error sending OTP code: {e}")
+        logger.error(f"Error sending OTP code: {e}", exc_info=True)
         return False
 
 
 def get_otp_from_email():
     mail = None
     try:
+        logger.debug(f"Connecting to IMAP server {CONFIG['gmail']['imap_server']}...")
         mail = imaplib.IMAP4_SSL(CONFIG["gmail"]["imap_server"])
         mail.login(CONFIG["gmail"]["email"], CONFIG["gmail"]["password"])
         mail.select("inbox")
 
         status, messages = mail.search(None, '(FROM "roadtests-donotreply@icbc.com")')
         if status != "OK":
-            print("Failed to find emails from ICBC")
+            logger.warning("IMAP search failed to find emails from ICBC")
             return None
 
         message_ids = messages[0].split()
+        logger.debug(f"IMAP search found {len(message_ids)} email(s) from ICBC")
         if not message_ids:
-            print("No new emails from ICBC")
+            logger.debug("No new emails from ICBC yet")
             return None
 
         latest_email_id = message_ids[-1]
         status, msg_data = mail.fetch(latest_email_id, "(RFC822)")
         if status != "OK":
-            print("Failed to read email")
+            logger.warning("Failed to fetch latest ICBC email")
             return None
 
         raw_email = msg_data[0][1]
@@ -293,16 +353,21 @@ def get_otp_from_email():
                 html_content = part.get_payload(decode=True).decode()
                 match = re.search(r'<h2[^>]*>(\d{6})</h2>', html_content)
                 if match:
+                    logger.info("OTP code found in email")
                     return match.group(1)
 
-        print("Failed to find OTP code in email")
+        logger.warning("Latest ICBC email did not contain a recognizable OTP code")
         return None
 
     except Exception as e:
-        print(f"Error getting OTP code from email: {e}")
+        logger.error(f"Error getting OTP code from email: {e}", exc_info=True)
         return None
     finally:
-        mail.logout()
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception:
+                pass
 
 
 def verify_otp(booked_ts, otp_code):
@@ -315,7 +380,10 @@ def verify_otp(booked_ts, otp_code):
             "code": otp_code
         }
 
+        logger.info("Verifying OTP code...")
+        logger.debug(f"PUT {CONFIG['verify_otp_url']} payload={{'bookedTs': '{booked_ts}', 'drvrID': {drvr_id}, 'code': '***'}}")
         with httpx.Client() as client:
+            t0 = time.monotonic()
             response = client.put(
                 CONFIG["verify_otp_url"],
                 json=verify_data,
@@ -325,19 +393,20 @@ def verify_otp(booked_ts, otp_code):
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 OPR/116.0.0.0"
                 }
             )
+            logger.debug(f"Verify OTP response: status={response.status_code} elapsed={time.monotonic() - t0:.2f}s body={response.text[:500]}")
 
             response.raise_for_status()
 
             result = response.json()
             if result.get("status") == "VERIFIED":
-                print("OTP code successfully verified")
+                logger.info("OTP code successfully verified")
                 return True
             else:
-                print("Invalid OTP code")
+                logger.error(f"Invalid OTP code. response={result}")
                 return False
 
     except Exception as e:
-        print(f"Error verifying OTP code: {e}")
+        logger.error(f"Error verifying OTP code: {e}", exc_info=True)
         return False
 
 
@@ -352,7 +421,10 @@ def book_appointment(booked_ts):
             }
         }
 
+        logger.info("Finalizing booking...")
+        logger.debug(f"PUT {CONFIG['book_url']} payload={book_data}")
         with httpx.Client() as client:
+            t0 = time.monotonic()
             response = client.put(
                 CONFIG["book_url"],
                 json=book_data,
@@ -362,29 +434,30 @@ def book_appointment(booked_ts):
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 OPR/116.0.0.0"
                 }
             )
+            logger.debug(f"Book response: status={response.status_code} elapsed={time.monotonic() - t0:.2f}s body={response.text[:500]}")
 
             response.raise_for_status()
 
             result = response.json()
             if result.get("code") == "success":
-                print("Booking completed successfully!")
+                logger.info("Booking completed successfully!")
                 return True
             else:
-                print("Failed to complete booking")
+                logger.error(f"Failed to complete booking. response={result}")
                 return False
 
     except Exception as e:
-        print(f"Error completing booking: {e}")
+        logger.error(f"Error completing booking: {e}", exc_info=True)
         return False
 
 
 def auto_book_earliest_appointment():
     appointment = get_earliest_appointment()
     if not appointment:
-        print("No suitable dates available for booking")
+        logger.debug("No suitable dates available for booking")
         return False
 
-    print(f"Found early date: {appointment['appointmentDt']['date']}")
+    logger.info(f"Found early date: {appointment['appointmentDt']['date']}")
 
     booked_ts = lock_appointment(appointment)
     if not booked_ts:
@@ -394,14 +467,15 @@ def auto_book_earliest_appointment():
         return False
 
     otp_code = None
-    for _ in range(20):
+    for attempt in range(1, 21):
+        logger.debug(f"Waiting for OTP email, attempt {attempt}/20...")
         time.sleep(10)
         otp_code = get_otp_from_email()
         if otp_code:
             break
 
     if not otp_code:
-        print("Failed to get OTP code from email")
+        logger.error("Failed to get OTP code from email after 20 attempts")
         return False
 
     if not verify_otp(booked_ts, otp_code):
@@ -414,36 +488,42 @@ def auto_book_earliest_appointment():
 
 
 def main():
+    logger.info(f"Logging to file: {LOG_FILE}")
+
     if not validate_config():
         return
-        
+
     if not refresh_token():
-        print("Failed to get token. Check your credentials.")
+        logger.error("Failed to get token. Check your credentials.")
         return
 
     last_check_time = time.time()
     last_token_time = time.time()
+    check_count = 0
 
-    print("Script started. Beginning monitoring for available dates...")
+    logger.info("Script started. Beginning monitoring for available dates...")
 
     try:
         while True:
             current_time = time.time()
 
             if current_time - last_token_time >= CONFIG["token_refresh_interval"]:
+                logger.debug("Token refresh interval reached, refreshing...")
                 refresh_token()
                 last_token_time = current_time
 
             if current_time - last_check_time >= CONFIG["check_interval"]:
+                check_count += 1
+                logger.debug(f"--- Check #{check_count} ---")
                 if auto_book_earliest_appointment():
-                    print("Booking completed successfully! Script terminating.")
+                    logger.info("Booking completed successfully! Script terminating.")
                     break
                 last_check_time = current_time
 
             time.sleep(1)
 
     except KeyboardInterrupt:
-        print("\nScript stopped by user")
+        logger.info("Script stopped by user")
 
 
 if __name__ == "__main__":

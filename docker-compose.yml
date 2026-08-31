@@ -1,3 +1,5 @@
+# ICBC road test appointment catcher.
+# See README.md for env var descriptions and how to find LOCATION_IDS.
 services:
   icbc-catcher:
     build: .
@@ -11,3 +13,6 @@ services:
       - USER_GMAIL_APP_PASSWORD=your_16_character_app_password
       - DESIRED_DATE_START=2025-06-24
       - DESIRED_DATE_END=2025-06-30
+      - LOCATION_IDS=9,93  # 9 = Vancouver (Point Grey), 93 = Richmond
+    volumes:
+      - ./logs:/app/logs  # verbose logs written here, timestamped per run
