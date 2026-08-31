@@ -162,10 +162,22 @@ docker-compose down
 
 ### Local Python Usage
 
-Run the script:
+Export the required environment variables (see [Configuration](#configuration) above — `LOCATION_IDS` is required, `NOTIFY_EMAILS` is optional), then run the script:
 ```bash
+export USER_LAST_NAME="YourLastName"
+export USER_LICENSE_NUMBER="1234567"
+export USER_KEYWORD="your_keyword_here"
+export USER_GMAIL="your.email@gmail.com"
+export USER_GMAIL_APP_PASSWORD="your_16_character_app_password"
+export DESIRED_DATE_START="2025-06-24"
+export DESIRED_DATE_END="2025-06-30"
+export LOCATION_IDS="9"
+export NOTIFY_EMAILS="you@example.com"   # optional
+
 python main.py
 ```
+
+No extra dependencies are needed for logging or email — it only uses `httpx`/`pytz` from `requirements.txt` plus the Python standard library. Logs are written to `./logs/` relative to wherever you run the script from, in addition to stdout.
 
 ### What the script does:
 - Start monitoring immediately
