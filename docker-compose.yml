@@ -14,5 +14,6 @@ services:
       - DESIRED_DATE_START=2025-06-24   # TODO: change to yours
       - DESIRED_DATE_END=2025-06-30     # TODO: change to yours
       - LOCATION_IDS=  # TODO: comma-separated. e.g. LOCATION_IDS=9,93 (See README for how to find IDs. For example, 9=Vancouver, 93=Richmond)
+      - NOTIFY_EMAILS=  # Optional. Comma-separated emails to notify on successful booking, e.g. a@x.com,b@y.com
     volumes:
       - ./logs:/app/logs  # verbose logs written here, timestamped per run

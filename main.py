@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
+from email.mime.text import MIMEText
 import imaplib
+import smtplib
 import httpx
 import email
 import time
@@ -55,8 +57,13 @@ CONFIG = {
     "gmail": {
         "email": os.getenv("USER_GMAIL"),
         "password": os.getenv("USER_GMAIL_APP_PASSWORD"),
-        "imap_server": "imap.gmail.com"
+        "imap_server": "imap.gmail.com",
+        "smtp_server": "smtp.gmail.com",
+        "smtp_port": 465
     },
+
+    # Comma-separated emails to notify on successful booking, e.g. "a@x.com,b@y.com". Optional.
+    "notify_emails": [e.strip() for e in os.getenv("NOTIFY_EMAILS", "").split(",") if e.strip()],
 
     "desired_date_range": {
         "start": os.getenv("DESIRED_DATE_START", "2025-06-24"),
@@ -101,8 +108,12 @@ def validate_config():
                      f"{os.getenv('LOCATION_IDS')!r}")
         return False
 
+    if not CONFIG["notify_emails"]:
+        logger.debug("NOTIFY_EMAILS not set — no booking notification email will be sent")
+
     logger.debug(f"Config validated. desired_date_range={CONFIG['desired_date_range']}, "
-                 f"location_ids={CONFIG['location_ids']}, check_interval={CONFIG['check_interval']}s")
+                 f"location_ids={CONFIG['location_ids']}, notify_emails={CONFIG['notify_emails']}, "
+                 f"check_interval={CONFIG['check_interval']}s")
     return True
 
 
@@ -502,6 +513,40 @@ def book_appointment(booked_ts):
         return False
 
 
+def send_booking_notification(appointment):
+    recipients = CONFIG["notify_emails"]
+    if not recipients:
+        logger.debug("NOTIFY_EMAILS not set, skipping booking notification email")
+        return
+
+    try:
+        appt_date = appointment["appointmentDt"]["date"]
+        start_tm = appointment.get("startTm", "")
+        location_id = appointment.get("posId", "")
+
+        body = (
+            f"Your ICBC road test has been successfully booked!\n\n"
+            f"Date: {appt_date}\n"
+            f"Time: {start_tm}\n"
+            f"Location ID: {location_id}\n"
+        )
+
+        msg = MIMEText(body)
+        msg["Subject"] = f"ICBC Road Test Booked - {appt_date}"
+        msg["From"] = CONFIG["gmail"]["email"]
+        msg["To"] = ", ".join(recipients)
+
+        logger.info(f"Sending booking notification email to: {', '.join(recipients)}")
+        with smtplib.SMTP_SSL(CONFIG["gmail"]["smtp_server"], CONFIG["gmail"]["smtp_port"]) as smtp:
+            smtp.login(CONFIG["gmail"]["email"], CONFIG["gmail"]["password"])
+            smtp.sendmail(CONFIG["gmail"]["email"], recipients, msg.as_string())
+
+        logger.info("Booking notification email sent successfully")
+
+    except Exception as e:
+        logger.error(f"Failed to send booking notification email: {e}", exc_info=True)
+
+
 def auto_book_earliest_appointment():
     appointment = get_earliest_appointment()
     if not appointment:
@@ -534,6 +579,8 @@ def auto_book_earliest_appointment():
 
     if not book_appointment(booked_ts):
         return False
+
+    send_booking_notification(appointment)
 
     return True
 

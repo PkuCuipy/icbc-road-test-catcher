@@ -119,6 +119,13 @@ export LOCATION_IDS="9"          # Vancouver driver licensing (Point Grey)
 export LOCATION_IDS="9,214"      # multiple locations
 ```
 
+### Booking Notification Email
+
+Configured via the `NOTIFY_EMAILS` environment variable, a comma-separated list of email addresses to notify when a booking succeeds. Optional — if unset, no notification is sent. Sent from the same `USER_GMAIL` account (via SMTP):
+```bash
+export NOTIFY_EMAILS="you@example.com,someone.else@example.com"
+```
+
 ### Other Settings
 ```python
 "check_interval": 90,           # Seconds between appointment checks
