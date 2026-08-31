@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import imaplib
 import httpx
 import email
@@ -200,6 +200,7 @@ def get_earliest_appointment():
 
         if earliest_appointment is None:
             logger.debug("No appointment within desired date range across all checked locations")
+            canary_check()
 
         return earliest_appointment
 
@@ -207,6 +208,56 @@ def get_earliest_appointment():
         logger.error(f"Error checking available dates: {e}", exc_info=True)
         current_token = None
         return None
+
+
+def canary_check():
+    """Diagnostic-only check: is the ICBC API returning ANY appointments at all,
+    within a much wider window (tomorrow to +178 days)? Never acted upon —
+    purely so the log can confirm the script is still working even when
+    nothing matches the desired date range."""
+    global current_token
+
+    if not current_token:
+        logger.warning("Canary check skipped: no auth token available")
+        return
+
+    canary_start = datetime.now(pytz.timezone(CONFIG["timezone"])).date() + timedelta(days=1)
+    canary_end = canary_start + timedelta(days=178)
+
+    try:
+        with httpx.Client() as client:
+            for location_id in CONFIG["location_ids"]:
+                request_data = CONFIG["appointment_request_base"].copy()
+                request_data["aPosID"] = location_id
+                request_data["examDate"] = canary_start.strftime("%Y-%m-%d")
+
+                response = client.post(
+                    CONFIG["appointments_url"],
+                    json=request_data,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": current_token,
+                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 OPR/116.0.0.0"
+                    }
+                )
+                response.raise_for_status()
+
+                appointments = response.json()
+                canary_dates = sorted({
+                    a["appointmentDt"]["date"] for a in appointments if "appointmentDt" in a
+                    and canary_start <= datetime.strptime(a["appointmentDt"]["date"], "%Y-%m-%d").date() <= canary_end
+                })
+
+                if canary_dates:
+                    logger.info(f"[CANARY] Location {location_id}: {len(canary_dates)} date(s) available "
+                                f"within {canary_start} to {canary_end} (outside desired range, not acting on this): "
+                                f"{canary_dates}")
+                else:
+                    logger.info(f"[CANARY] Location {location_id}: 0 dates available within "
+                                f"{canary_start} to {canary_end}. Script is running normally, ICBC just has nothing open.")
+
+    except Exception as e:
+        logger.warning(f"[CANARY] Check failed (this does not affect normal booking logic): {e}")
 
 
 def lock_appointment(appointment):
