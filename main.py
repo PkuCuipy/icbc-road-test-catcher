@@ -71,7 +71,7 @@ CONFIG = {
     },
 
     "timezone": "America/Vancouver",
-    "check_interval": 90,
+    "check_interval": 577,  # in seconds, set to a prime number to avoid sync with ICBC server
     "token_refresh_interval": 1500
 }
 
