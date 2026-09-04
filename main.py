@@ -639,7 +639,10 @@ def main():
         logger.error("Failed to get token. Check your credentials.")
         return
 
-    last_check_time = time.time()
+    # Backdate so the first check fires immediately instead of waiting out a
+    # full interval; the token was just refreshed above, so only the check
+    # needs backdating.
+    last_check_time = time.time() - CONFIG["check_interval"]
     last_token_time = time.time()
     check_count = 0
 
