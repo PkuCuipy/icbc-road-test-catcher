@@ -44,7 +44,10 @@ CONFIG = {
 
     "appointment_request_base": {
         "examType": "5-R-1",
-        "examDate": "2025-06-13",
+        # NOTE: examDate is the "dates starting from" lower bound of the ICBC
+        # search. It is filled in per-request from the desired range (or from
+        # today, whichever is later) — never hardcoded, or the search silently
+        # returns nothing.
         "prfDaysOfWeek": "[0,1,2,3,4,5,6]",
         "prfPartsOfDay": "[0,1]",
         "lastName": os.getenv("USER_LAST_NAME"),
@@ -65,9 +68,11 @@ CONFIG = {
     # Comma-separated emails to notify on successful booking, e.g. "a@x.com,b@y.com". Optional.
     "notify_emails": [e.strip() for e in os.getenv("NOTIFY_EMAILS", "").split(",") if e.strip()],
 
+    # No defaults: a stale hardcoded date silently produces a search that
+    # matches nothing. validate_config() requires both to be set explicitly.
     "desired_date_range": {
-        "start": os.getenv("DESIRED_DATE_START", "2025-06-24"),
-        "end": os.getenv("DESIRED_DATE_END", "2025-06-30")
+        "start": os.getenv("DESIRED_DATE_START", ""),
+        "end": os.getenv("DESIRED_DATE_END", "")
     },
 
     "timezone": "America/Vancouver",
@@ -88,10 +93,10 @@ def validate_config():
         "USER_KEYWORD",
         "USER_GMAIL",
         "USER_GMAIL_APP_PASSWORD",
-        "LOCATION_IDS"
+        "LOCATION_IDS",
+        "DESIRED_DATE_START",
+        "DESIRED_DATE_END"
     ]
-
-    optional_vars = ["DESIRED_DATE_START", "DESIRED_DATE_END"]
 
     missing_vars = []
     for var in required_vars:
@@ -107,6 +112,28 @@ def validate_config():
         logger.error(f"LOCATION_IDS is set but could not be parsed as a comma-separated list of integers: "
                      f"{os.getenv('LOCATION_IDS')!r}")
         return False
+
+    try:
+        start = datetime.strptime(CONFIG["desired_date_range"]["start"], "%Y-%m-%d").date()
+        end = datetime.strptime(CONFIG["desired_date_range"]["end"], "%Y-%m-%d").date()
+    except ValueError as e:
+        logger.error(f"DESIRED_DATE_START/DESIRED_DATE_END must be YYYY-MM-DD: {e}")
+        return False
+
+    if start > end:
+        logger.error(f"DESIRED_DATE_START ({start}) is after DESIRED_DATE_END ({end})")
+        return False
+
+    # A start date in the past is normal for a long-running catcher: the window
+    # may have opened weeks ago and simply not been filled yet. The search
+    # clamps to today, so this needs no intervention. Only warn if the window
+    # has fully closed, and keep running — the operator may be about to widen it.
+    today = datetime.now(pytz.timezone(CONFIG["timezone"])).date()
+    if end < today:
+        logger.warning(f"Desired date range {start}..{end} is entirely in the past (today is {today}). "
+                       f"Nothing can match until DESIRED_DATE_END is moved forward.")
+    elif start < today:
+        logger.info(f"DESIRED_DATE_START ({start}) is in the past; searching from today ({today}) onward")
 
     if not CONFIG["notify_emails"]:
         logger.debug("NOTIFY_EMAILS not set — no booking notification email will be sent")
@@ -171,10 +198,27 @@ def get_earliest_appointment():
         desired_end = datetime.strptime(CONFIG["desired_date_range"]["end"], "%Y-%m-%d").date()
         logger.info(f"Checking for available appointments between {desired_start} and {desired_end}...")
 
+        # ICBC ignores a search whose examDate is in the past, so never ask for a
+        # date earlier than tomorrow (same-day slots are never bookable) even
+        # when DESIRED_DATE_START has gone stale. This is the normal steady
+        # state for a long-running catcher whose window opened weeks ago.
+        today = datetime.now(pytz.timezone(CONFIG["timezone"])).date()
+        earliest_searchable = today + timedelta(days=1)
+        search_from = max(desired_start, earliest_searchable)
+
+        if desired_end < earliest_searchable:
+            # Re-checked every cycle, not just at startup: a window that was
+            # valid when the script launched can expire while it keeps running.
+            logger.warning(f"Desired range {desired_start}..{desired_end} has fully passed "
+                           f"(today is {today}); nothing can match until DESIRED_DATE_END moves forward")
+            canary_check()
+            return None
+
         with httpx.Client() as client:
             for location_id in CONFIG["location_ids"]:
                 request_data = CONFIG["appointment_request_base"].copy()
                 request_data["aPosID"] = location_id
+                request_data["examDate"] = search_from.strftime("%Y-%m-%d")
                 logger.debug(f"POST {CONFIG['appointments_url']} payload={request_data}")
 
                 t0 = time.monotonic()
@@ -616,7 +660,10 @@ def main():
                 if auto_book_earliest_appointment():
                     logger.info("Booking completed successfully! Script terminating.")
                     break
-                last_check_time = current_time
+                # Re-sample the clock: a booking attempt can block for minutes
+                # (OTP polling), and charging that time against the next
+                # interval would fire the following check immediately.
+                last_check_time = time.time()
 
             time.sleep(1)
 
