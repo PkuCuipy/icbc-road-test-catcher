@@ -110,6 +110,7 @@ export DESIRED_DATE_END="2025-06-30"
 The desired date range is now configured via environment variables:
 - `DESIRED_DATE_START`: Start date in YYYY-MM-DD format. **Required**, no default. A start date in the past is fine — the search automatically begins from tomorrow instead, so a long-running catcher needs no reconfiguration as its window opens.
 - `DESIRED_DATE_END`: End date in YYYY-MM-DD format. **Required**, no default. Once this date passes the script keeps running and logs a warning each cycle rather than exiting, so you can widen the window without a restart. Note ICBC has no same-day slots, so the last bookable day is the day before this date.
+- `EXCLUDED_DATES`: Comma-separated `YYYY-MM-DD` dates to skip even when they fall inside the desired range. Optional. Useful for workdays you can't take off — the range stays wide, and you subtract the specific days that don't work: `EXCLUDED_DATES="2026-11-19,2026-11-20"`. Skipped dates are logged each cycle.
 
 ### Location IDs
 

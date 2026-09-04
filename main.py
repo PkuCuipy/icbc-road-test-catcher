@@ -4,6 +4,7 @@ import imaplib
 import smtplib
 import httpx
 import email
+import email.utils
 import time
 import pytz
 import re
@@ -40,6 +41,12 @@ CONFIG = {
         "drvrLastName": os.getenv("USER_LAST_NAME"),
         "licenceNumber": os.getenv("USER_LICENSE_NUMBER"),
         "keyword": os.getenv("USER_KEYWORD")
+    },
+
+    # Dates to skip inside the desired range, e.g. "2026-11-19,2026-11-20".
+    # Filtered locally, on top of whatever ICBC returns. Optional.
+    "excluded_dates": {
+        e.strip() for e in os.getenv("EXCLUDED_DATES", "").split(",") if e.strip()
     },
 
     "appointment_request_base": {
@@ -83,6 +90,14 @@ CONFIG = {
 current_token = None
 last_token_refresh = None
 drvr_id = None
+
+
+def _is_iso_date(value):
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
 
 
 def validate_config():
@@ -134,6 +149,14 @@ def validate_config():
                        f"Nothing can match until DESIRED_DATE_END is moved forward.")
     elif start < today:
         logger.info(f"DESIRED_DATE_START ({start}) is in the past; searching from today ({today}) onward")
+
+    bad_excluded = [d for d in CONFIG["excluded_dates"] if not _is_iso_date(d)]
+    if bad_excluded:
+        logger.error(f"EXCLUDED_DATES must be YYYY-MM-DD dates, got: {sorted(bad_excluded)}")
+        return False
+    if CONFIG["excluded_dates"]:
+        logger.info(f"Excluding {len(CONFIG['excluded_dates'])} date(s) from booking: "
+                    f"{sorted(CONFIG['excluded_dates'])}")
 
     if not CONFIG["notify_emails"]:
         logger.debug("NOTIFY_EMAILS not set — no booking notification email will be sent")
@@ -242,11 +265,22 @@ def get_earliest_appointment():
                 if all_dates:
                     logger.debug(f"Location {location_id} raw available dates: {all_dates}")
 
+                skipped = sorted({
+                    d for d in all_dates
+                    if d in CONFIG["excluded_dates"]
+                    and desired_start <= datetime.strptime(d, "%Y-%m-%d").date() <= desired_end
+                })
+                if skipped:
+                    logger.info(f"Location {location_id}: skipping {len(skipped)} excluded date(s) "
+                                f"that were otherwise in range: {skipped}")
+
                 for appointment in appointments:
                     if "appointmentDt" in appointment:
                         appointment_date = datetime.strptime(appointment["appointmentDt"]["date"], "%Y-%m-%d").date()
 
                         if desired_start <= appointment_date <= desired_end:
+                            if appointment["appointmentDt"]["date"] in CONFIG["excluded_dates"]:
+                                continue
                             logger.info(f"Match found within desired range: {appointment_date} at location {location_id}")
                             if (earliest_appointment is None or
                                     appointment_date < datetime.strptime(earliest_appointment["appointmentDt"]["date"],
@@ -426,7 +460,30 @@ def send_otp_email(booked_ts):
         return False
 
 
-def get_otp_from_email():
+def _email_timestamp(email_message):
+    """Epoch seconds from an email's Date header, or None if unparsable."""
+    raw_date = email_message.get("Date")
+    if not raw_date:
+        return None
+    try:
+        parsed = email.utils.parsedate_to_datetime(raw_date)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=pytz.timezone(CONFIG["timezone"]))
+    return parsed.timestamp()
+
+
+def get_otp_from_email(not_before=None):
+    """Read the newest OTP code from Gmail.
+
+    `not_before` is the epoch time the OTP was requested. Emails older than
+    that are ICBC mail from a previous booking (the inbox keeps them), and
+    their codes are already expired — using one burns the appointment we just
+    locked, because the caller stops retrying as soon as any code is returned.
+    """
     mail = None
     try:
         logger.debug(f"Connecting to IMAP server {CONFIG['gmail']['imap_server']}...")
@@ -453,6 +510,20 @@ def get_otp_from_email():
 
         raw_email = msg_data[0][1]
         email_message = email.message_from_bytes(raw_email)
+
+        if not_before is not None:
+            sent_at = _email_timestamp(email_message)
+            if sent_at is None:
+                # ICBC's Date header is standard RFC 2822 (verified against a
+                # real message), so this is unexpected — skip rather than risk
+                # a stale code; the caller still has retries left.
+                logger.warning("ICBC email has no parsable Date header; ignoring it to avoid "
+                               "using a stale OTP")
+                return None
+            if sent_at < not_before:
+                logger.debug(f"Newest ICBC email predates this OTP request by "
+                             f"{not_before - sent_at:.0f}s — waiting for the new one")
+                return None
 
         for part in email_message.walk():
             if part.get_content_type() == "text/html":
@@ -603,6 +674,9 @@ def auto_book_earliest_appointment():
     if not booked_ts:
         return False
 
+    # Anchor before requesting the code: any ICBC email older than this is a
+    # leftover from an earlier booking and its code is already dead.
+    otp_requested_at = time.time()
     if not send_otp_email(booked_ts):
         return False
 
@@ -610,7 +684,7 @@ def auto_book_earliest_appointment():
     for attempt in range(1, 21):
         logger.debug(f"Waiting for OTP email, attempt {attempt}/20...")
         time.sleep(10)
-        otp_code = get_otp_from_email()
+        otp_code = get_otp_from_email(not_before=otp_requested_at)
         if otp_code:
             break
 

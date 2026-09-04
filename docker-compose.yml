@@ -14,6 +14,7 @@ services:
       - DESIRED_DATE_START=  # TODO: required, YYYY-MM-DD. A past date is fine; search starts from tomorrow.
       - DESIRED_DATE_END=    # TODO: required, YYYY-MM-DD. Last bookable day is the day before this.
       - LOCATION_IDS=  # TODO: comma-separated. e.g. LOCATION_IDS=9,93 (See README for how to find IDs. For example, 9=Vancouver, 93=Richmond)
+      - EXCLUDED_DATES=  # Optional. Comma-separated YYYY-MM-DD dates to skip inside the range, e.g. 2026-11-19,2026-11-20
       - NOTIFY_EMAILS=  # Optional. Comma-separated emails to notify on successful booking, e.g. a@x.com,b@y.com
     volumes:
       - ./logs:/app/logs  # verbose logs written here, timestamped per run
