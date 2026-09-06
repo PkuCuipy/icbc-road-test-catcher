@@ -87,6 +87,12 @@ CONFIG = {
     "token_refresh_interval": 1500
 }
 
+# How much older than the OTP request an email may look and still be accepted.
+# Absorbs clock skew between ICBC's mail server and this host, plus the
+# whole-second truncation of the Date header. Stale OTPs from earlier runs are
+# far older than this, so they are still rejected.
+OTP_EMAIL_CLOCK_TOLERANCE = 30
+
 current_token = None
 last_token_refresh = None
 drvr_id = None
@@ -520,9 +526,16 @@ def get_otp_from_email(not_before=None):
                 logger.warning("ICBC email has no parsable Date header; ignoring it to avoid "
                                "using a stale OTP")
                 return None
-            if sent_at < not_before:
-                logger.debug(f"Newest ICBC email predates this OTP request by "
-                             f"{not_before - sent_at:.0f}s — waiting for the new one")
+            # Compare with a generous tolerance. The Date header is written by
+            # ICBC's mail server (a different clock than ours) and is truncated
+            # to whole seconds, so a fresh email can legitimately look a little
+            # older than the request. The stale emails this guards against are
+            # from previous runs — minutes to days old — so a few minutes of
+            # slack still separates the two cases cleanly.
+            age = not_before - sent_at
+            if age > OTP_EMAIL_CLOCK_TOLERANCE:
+                logger.debug(f"Newest ICBC email is {age:.0f}s older than this OTP request "
+                             f"(tolerance {OTP_EMAIL_CLOCK_TOLERANCE}s) — waiting for the new one")
                 return None
 
         for part in email_message.walk():
