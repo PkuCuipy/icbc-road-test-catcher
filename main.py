@@ -48,9 +48,14 @@ CONFIG = {
     "excluded_dates": {
         e.strip() for e in os.getenv("EXCLUDED_DATES", "").split(",") if e.strip()
     },
+    # Python weekday numbering: Monday=0, Saturday=5, Sunday=6.
+    # Empty means every day. Applied locally before any appointment is locked.
+    "desired_weekdays": {
+        d.strip() for d in os.getenv("DESIRED_WEEKDAYS", "").split(",") if d.strip()
+    },
 
     "appointment_request_base": {
-        "examType": "5-R-1",
+        "examType": f"{os.getenv('ROAD_TEST_CLASS', '5').strip()}-R-1",
         # NOTE: examDate is the "dates starting from" lower bound of the ICBC
         # search. It is filled in per-request from the desired range (or from
         # today, whichever is later) — never hardcoded, or the search silently
@@ -106,8 +111,21 @@ def _is_iso_date(value):
         return False
 
 
+def is_desired_day(appointment_date):
+    """Apply weekday and explicit-date exclusions before selecting a booking."""
+    weekdays = CONFIG["desired_weekdays"]
+    return (
+        (not weekdays or str(appointment_date.weekday()) in weekdays)
+        and appointment_date.isoformat() not in CONFIG["excluded_dates"]
+    )
+
+
 def validate_config():
     """Validate that all required environment variables are set"""
+    if CONFIG["appointment_request_base"]["examType"] not in {"5-R-1", "7-R-1"}:
+        logger.error("ROAD_TEST_CLASS must be 5 or 7")
+        return False
+
     required_vars = [
         "USER_LAST_NAME",
         "USER_LICENSE_NUMBER",
@@ -156,6 +174,10 @@ def validate_config():
     elif start < today:
         logger.info(f"DESIRED_DATE_START ({start}) is in the past; searching from today ({today}) onward")
 
+    if not CONFIG["desired_weekdays"].issubset({str(d) for d in range(7)}):
+        logger.error("DESIRED_WEEKDAYS must contain comma-separated numbers 0–6 (Monday=0, Saturday=5)")
+        return False
+
     bad_excluded = [d for d in CONFIG["excluded_dates"] if not _is_iso_date(d)]
     if bad_excluded:
         logger.error(f"EXCLUDED_DATES must be YYYY-MM-DD dates, got: {sorted(bad_excluded)}")
@@ -170,6 +192,8 @@ def validate_config():
     logger.debug(f"Config validated. desired_date_range={CONFIG['desired_date_range']}, "
                  f"location_ids={CONFIG['location_ids']}, notify_emails={CONFIG['notify_emails']}, "
                  f"check_interval={CONFIG['check_interval']}s")
+    logger.info(f"Road test class: {CONFIG['appointment_request_base']['examType']}; "
+                f"allowed weekdays (Monday=0): {sorted(CONFIG['desired_weekdays']) or 'all'}")
     return True
 
 
@@ -285,7 +309,7 @@ def get_earliest_appointment():
                         appointment_date = datetime.strptime(appointment["appointmentDt"]["date"], "%Y-%m-%d").date()
 
                         if desired_start <= appointment_date <= desired_end:
-                            if appointment["appointmentDt"]["date"] in CONFIG["excluded_dates"]:
+                            if not is_desired_day(appointment_date):
                                 continue
                             logger.info(f"Match found within desired range: {appointment_date} at location {location_id}")
                             if (earliest_appointment is None or
