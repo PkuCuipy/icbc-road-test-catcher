@@ -73,6 +73,19 @@ pip install -r requirements.txt
 
 ## Configuration
 
+### Road test class
+
+Set `ROAD_TEST_CLASS` to `5` (the default) or `7` for the Class 7 (L-to-N) road test:
+
+```bash
+export ROAD_TEST_CLASS="7"
+```
+
+Other values are rejected before login. For Docker, change `ROAD_TEST_CLASS=5`
+to `ROAD_TEST_CLASS=7` in `docker-compose.yml`.
+Both the main availability search and the diagnostic search use this setting.
+The booking flow uses the exam details returned with the selected appointment.
+
 ### Docker Configuration (Recommended)
 
 Edit the `docker-compose.yml` file and replace the placeholder values with your personal information:
@@ -111,6 +124,13 @@ The desired date range is now configured via environment variables:
 - `DESIRED_DATE_START`: Start date in YYYY-MM-DD format. **Required**, no default. A start date in the past is fine — the search automatically begins from tomorrow instead, so a long-running catcher needs no reconfiguration as its window opens.
 - `DESIRED_DATE_END`: End date in YYYY-MM-DD format. **Required**, no default. Once this date passes the script keeps running and logs a warning each cycle rather than exiting, so you can widen the window without a restart. Note ICBC has no same-day slots, so the last bookable day is the day before this date.
 - `EXCLUDED_DATES`: Comma-separated `YYYY-MM-DD` dates to skip even when they fall inside the desired range. Optional. Useful for workdays you can't take off — the range stays wide, and you subtract the specific days that don't work: `EXCLUDED_DATES="2026-11-19,2026-11-20"`. Skipped dates are logged each cycle.
+
+### Weekday filter
+
+To search only Saturdays within your date range, set `DESIRED_WEEKDAYS=5`.
+Weekdays use Monday=0 through Sunday=6; comma-separated values allow multiple
+days, and an empty value allows all days. This filter is applied locally before
+booking, in addition to the inclusive date range and `EXCLUDED_DATES`.
 
 ### Location IDs
 
